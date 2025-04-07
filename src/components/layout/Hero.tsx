@@ -2,7 +2,7 @@ import React from "react";
 import { MoveUpRight } from "lucide-react";
 function Hero() {
   return (
-    <div className="flex items-center my-32 flex-col gap-7 w-full justify-between">
+    <div className="flex items-center my-40 flex-col gap-7 w-full justify-between">
       <h1 className="text-5xl md:text-5xl lg:text-6xl xl:text-7xl  text-center text-black">
         Speak Naturally. Sound Globally.
       </h1>
