@@ -33,9 +33,9 @@ function page() {
           ></div>
           <DialogHeader>
             <div className="flex items-center justify-center">
-                <Image className="flex justify-center" src="/logoniabs.svg" alt="Arruuuyyy" width={50} height={50}/>
+              <Image className="flex justify-center" src="/logoniabs.svg" alt="Arruuuyyy" width={50} height={50}/>
             </div>
-            <DialogTitle className="sm:text-center">Sign Up AI</DialogTitle>
+            <DialogTitle className="sm:text-center">Sign in AI</DialogTitle>
             <DialogDescription className="sm:text-center">
               We just need a few details to get you started.
             </DialogDescription>
@@ -45,20 +45,16 @@ function page() {
         <form className="space-y-5">
           <div className="space-y-4">
             <div className="space-y-2">
-              <Input placeholder="Username" required />
+              <label htmlFor={`email`}>Email</label>
+              <Input placeholder="hi@yourcompany.com" required />
             </div>
             <div className="space-y-2">
-              <Input placeholder="Email" required />
-            </div>
-            <div className="space-y-2">
+              <label htmlFor={`password`}>Password</label>
               <Input type="password" placeholder="Password" required />
-            </div>
-            <div className="space-y-2">
-              <Input type="password" placeholder="Confirm Password" required />
             </div>
           </div>
           <div className="flex justify-center">
-            <Button type="submit" className="w-64">Create Account</Button>
+            <Button type="submit" className="w-64">Login</Button>
           </div>
         </form>
 
@@ -67,12 +63,18 @@ function page() {
         </div>
         <Button variant="outline">Continue with Google</Button>
         <p className="text-center text-xs text-muted-foreground">
-
-          <Link href='/auth/signin' className="underline hover:no-underline">
-          Already have an account
+          Don't have an account?{" "}
+          <Link href='/auth/signup' className="underline hover:no-underline">
+            Sign up
           </Link>
         </p>
-
+        <p className="text-center text-xs text-muted-foreground">
+          By signing up you agree to our{" "}
+          <a className="underline hover:no-underline" href="#">
+            Terms
+          </a>
+          .
+        </p>
       </DialogContent>
     </Dialog>
   );
