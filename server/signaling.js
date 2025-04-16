@@ -35,7 +35,7 @@ export function handleWebSocketConnection(ws) {
         }
       }
 
-      //note focus here abs 
+      // Improved ontrack handler
       peer.ontrack = (event) => {
         console.log("🎧 ontrack event fired")
         const [incomingStream] = event.streams
@@ -44,6 +44,7 @@ export function handleWebSocketConnection(ws) {
             // Log track details using available properties
             console.log(`🎤 Received ${track.kind} track with ID: ${track.id}`)
 
+            //note track details 
             if (track.kind === "audio") {
               console.log("🎤 Audio track detected")
               console.log("🔍 Track properties:", {
@@ -54,16 +55,18 @@ export function handleWebSocketConnection(ws) {
                 muted: track.muted,
               })
 
-              // Set up audio processing if needed
-              setupAudioProcessing(incomingStream)
+              // note Set up continuous audio monitoring instead of timeout-based
+              setupContinuousAudioMonitoring(incomingStream, track, ws)
 
+              // Original event handlers
               track.onunmute = () => {
-                console.log("🟢 Listening: user is speaking")
+                console.log("🟢 Listening: user is speaking (onunmute)")
+                ws.send(JSON.stringify({ type: "audio_status", status: "speaking" }))
               }
 
-              // Optionally: Detect when audio stops
               track.onmute = () => {
-                console.log("🔴 Mic is muted or no audio")
+                console.log("🔴 Mic is muted or no audio (onmute)")
+                ws.send(JSON.stringify({ type: "audio_status", status: "silent" }))
               }
             }
           })
@@ -88,6 +91,11 @@ export function handleWebSocketConnection(ws) {
         console.error("❌ Failed to add ICE candidate:", err)
       }
     }
+
+    // Handle heartbeat messages from client
+    if (data.type === "heartbeat") {
+      ws.send(JSON.stringify({ type: "heartbeat_ack" }))
+    }
   })
 
   ws.on("close", () => {
@@ -96,7 +104,90 @@ export function handleWebSocketConnection(ws) {
   })
 }
 
-// Function to process audio from the incoming stream
+// note  Improved continuous audio monitoring function
+function setupContinuousAudioMonitoring(stream, track, ws) {
+  try {
+    // note  Check if track is valid
+    if (!track || track.readyState !== "live") {
+      console.log("❌ Audio track is not live")
+      return
+    }
+
+    const audioTracks = stream.getAudioTracks()
+    if (audioTracks.length === 0) {
+      console.log("❌ No audio tracks found for speech-to-text")
+      return
+    }
+
+    console.log("✅ Setting up continuous audio monitoring")
+
+    // Track state for speaking detection
+    let lastActiveState = track.enabled
+    let checkCount = 0
+    let consecutiveSilentChecks = 0
+    let consecutiveActiveChecks = 0
+
+    // note Instead of a timeout, use an interval to continuously check track state
+    const monitoringInterval = setInterval(() => {
+      // Only continue if track is still valid
+      if (track.readyState !== "live") {
+        console.log("❌ Audio track is no longer live, stopping monitoring")
+        clearInterval(monitoringInterval)
+        return
+      }
+
+      checkCount++
+
+      // Check if track is enabled and active
+      const isActive = track.enabled && !track.muted
+
+      // If state changed, log it
+      if (isActive !== lastActiveState) {
+        console.log(`🔄 Audio track state changed: ${isActive ? "active" : "inactive"}`)
+        lastActiveState = isActive
+      }
+
+      // Count consecutive checks in each state
+      if (isActive) {
+        consecutiveSilentChecks = 0
+        consecutiveActiveChecks++
+
+        // After a few consecutive active checks, consider the user speaking
+        if (consecutiveActiveChecks === 3) {
+          console.log("🎤 User is speaking (continuous monitoring)")
+          ws.send(JSON.stringify({ type: "audio_status", status: "speaking" }))
+        }
+      } else {
+        consecutiveActiveChecks = 0
+        consecutiveSilentChecks++
+
+        // Only report silence after several consecutive silent checks
+        // This prevents false silence detection during normal speech pauses
+        if (consecutiveSilentChecks === 10) {
+          console.log("🔇 User is silent (continuous monitoring)")
+          ws.send(JSON.stringify({ type: "audio_status", status: "silent" }))
+        }
+      }
+
+      // Every 30 checks (about 15 seconds), log the current state
+      if (checkCount % 30 === 0) {
+        console.log(`🔍 Audio monitoring check #${checkCount}: ${isActive ? "active" : "inactive"}`)
+      }
+    }, 500) // Check every 500ms instead of using a timeout
+
+    // Clean up the interval if the track ends
+    track.addEventListener("ended", () => {
+      console.log("🛑 Audio track ended, stopping monitoring")
+      clearInterval(monitoringInterval)
+    })
+
+    console.log("✅ Continuous audio monitoring setup complete")
+  } catch (error) {
+    console.error("❌ Error setting up audio monitoring:", error)
+  }
+}
+
+// Original function kept for reference
 function setupAudioProcessing(stream) {
   try {
     // Check if we have audio tracks
