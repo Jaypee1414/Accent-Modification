@@ -19,12 +19,15 @@ const WebRTCClient = () => {
   const [connectionStatus, setConnectionStatus] = useState("disconnected")
   const [audioLevel, setAudioLevel] = useState(0)
   const [serverDetectedSpeech, setServerDetectedSpeech] = useState(false)
+  const [feedbackVolume, setFeedbackVolume] = useState(1.0) // Default volume at 100%
 
   const audioRef = useRef<HTMLAudioElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const gainNodeRef = useRef<GainNode | null>(null) // Added gain node reference
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null) // Added source node reference
 
   // Handle signaling messages from the WebSocket server
   const handleSignalingMessage = async (data: SignalingMessage) => {
@@ -51,7 +54,7 @@ const WebRTCClient = () => {
       case "audio_status":
         // Handle audio status messages from server
         if (data.status === "speaking") {
-          console.log("🎙️ Server detected speech")
+          console.log("🎙️ Jaypeeeeee")
           setServerDetectedSpeech(true)
         } else if (data.status === "silent") {
           console.log("🔇 Server detected silence")
@@ -82,17 +85,17 @@ const WebRTCClient = () => {
     }, 5000)
   }
 
-  // Get user media (microphone) with specific constraints
+  // note Get user media (microphone) with specific constraints
   const getUserMedia = async () => {
     try {
       // Use specific audio constraints for better quality and compatibility
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          // Lower sample rate to reduce conflicts with other apps
-          sampleRate: 22050,
+          echoCancellation: false, // Disable echo cancellation for clearer feedback
+          noiseSuppression: false, // Disable noise suppression for clearer feedback
+          autoGainControl: true, // Keep auto gain control for better volume
+          // Higher sample rate for better audio quality
+          sampleRate: 44100,
         },
       })
 
@@ -109,10 +112,10 @@ const WebRTCClient = () => {
         try {
           console.log(`🎤 Track settings:`, track.getSettings())
 
-          // Apply constraints to make it work better with other audio apps
+          // Apply constraints to improve audio quality
           await track.applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
+            echoCancellation: false,
+            noiseSuppression: false,
             autoGainControl: true,
           })
         } catch (e) {
@@ -128,24 +131,67 @@ const WebRTCClient = () => {
     }
   }
 
-  // Toggle audio feedback
-  const toggleAudioFeedback = () => {
-    setAudioFeedback(!audioFeedback)
+  // Set up audio feedback with Web Audio API for better control
+  const setupAudioFeedback = (stream: MediaStream) => {
+    try {
+      // Create AudioContext if it doesn't exist
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({ sampleRate: 44100 })
+      }
+
+      const audioContext = audioContextRef.current
+
+      // Clean up previous connections
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect()
+      }
+      if (gainNodeRef.current) {
+        gainNodeRef.current.disconnect()
+      }
+
+      // Create source from the stream
+      const source = audioContext.createMediaStreamSource(stream)
+      audioSourceRef.current = source
+
+      // Create a gain node for volume control
+      const gainNode = audioContext.createGain()
+      gainNode.gain.value = feedbackVolume
+      gainNodeRef.current = gainNode
+
+      // Connect source -> gain -> destination (speakers)
+      source.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      console.log("🔊 Audio feedback set up with gain:", feedbackVolume)
+    } catch (error) {
+      console.error("Error setting up audio feedback:", error)
+    }
   }
 
-  // Update audio element when audio feedback state changes
-  useEffect(() => {
-    if (audioRef.current && mediaStream) {
-      if (audioFeedback) {
-        audioRef.current.srcObject = mediaStream
-        audioRef.current.play().catch((err) => console.error("Error playing audio:", err))
-      } else {
-        audioRef.current.srcObject = null
-      }
-    }
-  }, [audioFeedback, mediaStream])
+  // note Toggle audio feedback
+  const toggleAudioFeedback = () => {
+    const newFeedbackState = !audioFeedback
+    setAudioFeedback(newFeedbackState)
 
-  // Create the peer connection
+    if (newFeedbackState && mediaStream) {
+      // Set up audio feedback with Web Audio API
+      setupAudioFeedback(mediaStream)
+    } else if (!newFeedbackState && gainNodeRef.current) {
+      // Disconnect gain node to stop feedback
+      gainNodeRef.current.disconnect()
+    }
+  }
+
+  // note Update feedback volume
+  const updateFeedbackVolume = (volume: number) => {
+    setFeedbackVolume(volume)
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = volume
+      console.log(`🔊 Updated feedback volume: ${volume}`)
+    }
+  }
+
+  // note Create the peer connection
   const createPeerConnection = async () => {
     const stream = await getUserMedia()
     if (!stream) return null
@@ -191,20 +237,20 @@ const WebRTCClient = () => {
     return peer
   }
 
-  // Setup audio level detection with optimizations for shared use
+  // note Setup audio level detection with optimizations for shared use
   const setupAudioLevelDetection = (stream: MediaStream) => {
     try {
-      // Create or reuse AudioContext with lower sample rate
+      // Create or reuse AudioContext
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 22050 })
+        audioContextRef.current = new AudioContext({ sampleRate: 44100 })
       }
 
       const audioContext = audioContextRef.current
       const source = audioContext.createMediaStreamSource(stream)
       const analyser = audioContext.createAnalyser()
 
-      // Use smaller FFT size to reduce CPU usage
-      analyser.fftSize = 128
+      // Use moderate FFT size for better frequency resolution
+      analyser.fftSize = 256
       source.connect(analyser)
       analyserRef.current = analyser
 
@@ -249,7 +295,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // Start communication by creating an offer
+  // note  Start communication by creating an offer
   const startCommunication = async () => {
     const peer = peerConnection || (await createPeerConnection())
     if (!peer) return
@@ -271,7 +317,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // Stop communication and release resources
+  // note  Stop communication and release resources
   const stopCommunication = () => {
     // Stop heartbeat
     if (heartbeatIntervalRef.current) {
@@ -427,8 +473,8 @@ const WebRTCClient = () => {
         </div>
 
         {mediaStream && (
-          <div className="mt-2">
-            <label className="flex items-center space-x-2 cursor-pointer">
+          <div className="mt-2 w-full">
+            <label className="flex items-center space-x-2 cursor-pointer mb-2">
               <input
                 type="checkbox"
                 checked={audioFeedback}
@@ -437,13 +483,29 @@ const WebRTCClient = () => {
               />
               <span>Hear my voice (audio feedback)</span>
             </label>
+
+            {/* Volume control slider for audio feedback */}
+            {audioFeedback && (
+              <div className="mt-2 w-full">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Feedback Volume: {Math.round(feedbackVolume * 100)}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={feedbackVolume}
+                  onChange={(e) => updateFeedbackVolume(Number.parseFloat(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+            )}
           </div>
         )}
 
         {audioFeedback && (
-          <div className="text-sm text-gray-600 mt-1">
-            ⚠️ You may need to lower your volume to prevent audio feedback loop
-          </div>
+          <div className="text-sm text-gray-600 mt-1">Use the volume slider above to adjust feedback volume</div>
         )}
       </div>
     </div>
