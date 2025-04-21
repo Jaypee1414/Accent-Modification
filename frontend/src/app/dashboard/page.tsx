@@ -3,11 +3,24 @@ import { useEffect, useState, useRef } from "react"
 
 // Define the types for the WebSocket message
 interface SignalingMessage {
-  type: "offer" | "answer" | "candidate" | "audio_status" | "heartbeat_ack"
+  type: "offer" | "answer" | "candidate" | "audio_status" | "heartbeat_ack" | "audio_metrics"
   offer?: RTCSessionDescriptionInit
   answer?: RTCSessionDescriptionInit
   candidate?: RTCIceCandidateInit
   status?: string
+  metrics?: {
+    level: number
+    volumeLevel: string
+    quality: string
+    packetCounter?: number
+    timeSinceLastCheck?: number
+    active?: boolean
+    trackEnabled?: boolean
+    trackMuted?: boolean
+    trackState?: string
+    serverTimestamp?: number
+    serverReceived?: boolean
+  }
 }
 
 const WebRTCClient = () => {
@@ -20,6 +33,24 @@ const WebRTCClient = () => {
   const [audioLevel, setAudioLevel] = useState(0)
   const [serverDetectedSpeech, setServerDetectedSpeech] = useState(false)
   const [feedbackVolume, setFeedbackVolume] = useState(1.0) // Default volume at 100%
+  const [serverAudioMetrics, setServerAudioMetrics] = useState<{
+    level: number
+    volumeLevel: string
+    quality: string
+    packetCounter?: number
+    timeSinceLastCheck?: number
+    active?: boolean
+    trackEnabled?: boolean
+    trackMuted?: boolean
+    trackState?: string
+    serverTimestamp?: number
+    serverReceived?: boolean
+  } | null>(null)
+  const [clientAudioMetrics, setClientAudioMetrics] = useState<{
+    level: number
+    volumeLevel: string
+    quality: string
+  } | null>(null)
 
   const audioRef = useRef<HTMLAudioElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -28,10 +59,17 @@ const WebRTCClient = () => {
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const gainNodeRef = useRef<GainNode | null>(null) // Added gain node reference
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null) // Added source node reference
+  const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null) // For sending metrics to server
 
   // Handle signaling messages from the WebSocket server
   const handleSignalingMessage = async (data: SignalingMessage) => {
-    if (!peerConnection && data.type !== "audio_status" && data.type !== "heartbeat_ack") return
+    if (
+      !peerConnection &&
+      data.type !== "audio_status" &&
+      data.type !== "heartbeat_ack" &&
+      data.type !== "audio_metrics"
+    )
+      return
 
     switch (data.type) {
       case "answer":
@@ -42,6 +80,9 @@ const WebRTCClient = () => {
 
           // Start sending heartbeats after connection is established
           startHeartbeat()
+
+          // Start sending audio metrics to server
+          startSendingAudioMetrics()
         }
         break
       case "candidate":
@@ -54,11 +95,18 @@ const WebRTCClient = () => {
       case "audio_status":
         // Handle audio status messages from server
         if (data.status === "speaking") {
-          console.log("🎙️ Jaypeeeeee")
+          console.log("🎙️ Server detected speech")
           setServerDetectedSpeech(true)
         } else if (data.status === "silent") {
           console.log("🔇 Server detected silence")
           setServerDetectedSpeech(false)
+        }
+        break
+      case "audio_metrics":
+        // Handle audio metrics from server
+        if (data.metrics) {
+          console.log("📊 Received audio metrics from server:", data.metrics)
+          setServerAudioMetrics(data.metrics)
         }
         break
       case "heartbeat_ack":
@@ -68,6 +116,29 @@ const WebRTCClient = () => {
       default:
         break
     }
+  }
+
+  // Start sending audio metrics to server
+  const startSendingAudioMetrics = () => {
+    // Clear any existing interval
+    if (metricsIntervalRef.current) {
+      clearInterval(metricsIntervalRef.current)
+    }
+
+    // Send audio metrics every second
+    metricsIntervalRef.current = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN && clientAudioMetrics) {
+        ws.send(
+          JSON.stringify({
+            type: "client_audio_metrics",
+            metrics: {
+              ...clientAudioMetrics,
+              clientTimestamp: Date.now(),
+            },
+          }),
+        )
+      }
+    }, 1000)
   }
 
   // Start sending heartbeats to keep the connection alive
@@ -85,7 +156,7 @@ const WebRTCClient = () => {
     }, 5000)
   }
 
-  // note Get user media (microphone) with specific constraints
+  // Get user media (microphone) with specific constraints
   const getUserMedia = async () => {
     try {
       // Use specific audio constraints for better quality and compatibility
@@ -168,7 +239,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // note Toggle audio feedback
+  // Toggle audio feedback
   const toggleAudioFeedback = () => {
     const newFeedbackState = !audioFeedback
     setAudioFeedback(newFeedbackState)
@@ -182,7 +253,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // note Update feedback volume
+  // Update feedback volume
   const updateFeedbackVolume = (volume: number) => {
     setFeedbackVolume(volume)
     if (gainNodeRef.current) {
@@ -191,7 +262,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // note Create the peer connection
+  // Create the peer connection
   const createPeerConnection = async () => {
     const stream = await getUserMedia()
     if (!stream) return null
@@ -223,6 +294,10 @@ const WebRTCClient = () => {
           clearInterval(heartbeatIntervalRef.current)
           heartbeatIntervalRef.current = null
         }
+        if (metricsIntervalRef.current) {
+          clearInterval(metricsIntervalRef.current)
+          metricsIntervalRef.current = null
+        }
       }
     }
 
@@ -237,7 +312,7 @@ const WebRTCClient = () => {
     return peer
   }
 
-  // note Setup audio level detection with optimizations for shared use
+  // Setup audio level detection with optimizations for shared use
   const setupAudioLevelDetection = (stream: MediaStream) => {
     try {
       // Create or reuse AudioContext
@@ -279,8 +354,44 @@ const WebRTCClient = () => {
         const isActive = average > 10
         setIsListening(isActive)
 
+        // Calculate audio metrics for client-side
         if (isActive) {
           console.log(`🔊 Speaking - Audio level: ${average.toFixed(2)}`)
+
+          // Convert to dB scale (0-1 to a more readable scale)
+          // Map 0-255 to -100dB to 0dB
+          const normalizedLevel = average / 255
+          const dbLevel = normalizedLevel === 0 ? -100 : 20 * Math.log10(normalizedLevel)
+
+          // Determine volume level
+          let volumeLevel = "Silent"
+          if (dbLevel > -20) {
+            volumeLevel = "Loud"
+          } else if (dbLevel > -40) {
+            volumeLevel = "Normal"
+          } else if (dbLevel > -60) {
+            volumeLevel = "Soft"
+          } else {
+            volumeLevel = "Very Soft"
+          }
+
+          // Determine quality based on level consistency
+          // This is a simplified approach since we can't measure packet loss client-side
+          let quality = "Unknown"
+          if (average > 50) {
+            quality = "Good"
+          } else if (average > 20) {
+            quality = "Fair"
+          } else {
+            quality = "Poor"
+          }
+
+          // Update client audio metrics
+          setClientAudioMetrics({
+            level: dbLevel,
+            volumeLevel,
+            quality,
+          })
         }
 
         // Check less frequently to reduce CPU usage
@@ -295,7 +406,7 @@ const WebRTCClient = () => {
     }
   }
 
-  // note  Start communication by creating an offer
+  // Start communication by creating an offer
   const startCommunication = async () => {
     const peer = peerConnection || (await createPeerConnection())
     if (!peer) return
@@ -317,12 +428,18 @@ const WebRTCClient = () => {
     }
   }
 
-  // note  Stop communication and release resources
+  // Stop communication and release resources
   const stopCommunication = () => {
     // Stop heartbeat
     if (heartbeatIntervalRef.current) {
       clearInterval(heartbeatIntervalRef.current)
       heartbeatIntervalRef.current = null
+    }
+
+    // Stop metrics interval
+    if (metricsIntervalRef.current) {
+      clearInterval(metricsIntervalRef.current)
+      metricsIntervalRef.current = null
     }
 
     if (mediaStream) {
@@ -354,6 +471,8 @@ const WebRTCClient = () => {
     setConnectionStatus("disconnected")
     setAudioLevel(0)
     setServerDetectedSpeech(false)
+    setServerAudioMetrics(null)
+    setClientAudioMetrics(null)
   }
 
   useEffect(() => {
@@ -387,6 +506,29 @@ const WebRTCClient = () => {
       stopCommunication()
     }
   }, [])
+
+  // Get color for audio level display
+  const getAudioLevelColor = (level: number) => {
+    if (level > -20) return "text-green-600"
+    if (level > -40) return "text-blue-600"
+    if (level > -60) return "text-yellow-600"
+    return "text-red-600"
+  }
+
+  // Get color for quality display
+  const getQualityColor = (quality: string) => {
+    switch (quality) {
+      case "Excellent":
+      case "Good":
+        return "text-green-600"
+      case "Fair":
+        return "text-blue-600"
+      case "Poor":
+        return "text-yellow-600"
+      default:
+        return "text-gray-600"
+    }
+  }
 
   return (
     <div className="p-6 max-w-md mx-auto">
@@ -442,6 +584,54 @@ const WebRTCClient = () => {
               className="bg-green-600 h-2.5 rounded-full transition-all duration-100"
               style={{ width: `${Math.min(audioLevel * 2, 100)}%` }}
             ></div>
+          </div>
+        )}
+
+        {/* Server audio metrics display */}
+        {serverAudioMetrics && (
+          <div className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <h3 className="font-medium text-gray-900 mb-2">Server Audio Metrics:</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="text-sm">
+                <span className="text-gray-500">Status: </span>
+                <span className={serverAudioMetrics.active ? "text-green-600" : "text-red-600"}>
+                  {serverAudioMetrics.active ? "Active" : "Inactive"}
+                </span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-500">Volume: </span>
+                <span className={getAudioLevelColor(serverAudioMetrics.level)}>{serverAudioMetrics.volumeLevel}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-500">Track State: </span>
+                <span className="text-blue-600">{serverAudioMetrics.trackState || "Unknown"}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-500">Last Check: </span>
+                <span className="text-blue-600">
+                  {serverAudioMetrics.timeSinceLastCheck ? `${serverAudioMetrics.timeSinceLastCheck}ms` : "Unknown"}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Client audio metrics display */}
+        {clientAudioMetrics && (
+          <div className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 mt-2">
+            <h3 className="font-medium text-gray-900 mb-2">Client Audio Metrics:</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="text-sm">
+                <span className="text-gray-500">Volume: </span>
+                <span className={getAudioLevelColor(clientAudioMetrics.level)}>
+                  {clientAudioMetrics.volumeLevel} ({clientAudioMetrics.level.toFixed(1)} dB)
+                </span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-500">Quality: </span>
+                <span className={getQualityColor(clientAudioMetrics.quality)}>{clientAudioMetrics.quality}</span>
+              </div>
+            </div>
           </div>
         )}
 
@@ -507,6 +697,17 @@ const WebRTCClient = () => {
         {audioFeedback && (
           <div className="text-sm text-gray-600 mt-1">Use the volume slider above to adjust feedback volume</div>
         )}
+
+        {/* Tips for better audio quality */}
+        <div className="mt-4 text-sm text-gray-700 bg-blue-50 p-3 rounded-md w-full">
+          <h3 className="font-bold mb-1">Audio Quality Tips:</h3>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Use headphones to prevent feedback loops</li>
+            <li>Speak clearly and at a consistent volume</li>
+            <li>Position your microphone properly (4-6 inches away)</li>
+            <li>Adjust the feedback volume slider for optimal monitoring</li>
+          </ul>
+        </div>
       </div>
     </div>
   )
