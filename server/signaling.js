@@ -1,13 +1,17 @@
-import wrtc from "wrtc"
+const wrtc = require("wrtc")
+const { RTCAudioSink } = wrtc.nonstandard
+const fs = require("fs")
+const wav = require("wav")
 
-export function handleWebSocketConnection(ws) {
+function handleWebSocketConnection(ws) {
   console.log("✅ WebSocket client connected (for signaling)")
 
   let peer = null
   let audioActivityInterval = null
-  let lastPacketTime = 0
-  let packetCounter = 0
-  let isAudioActive = false
+  let fileStream = null
+  let wavWriter = null
+  let sink = null
+  let recordingStartTime = null
 
   ws.on("message", async (message) => {
     let data = null
@@ -21,13 +25,17 @@ export function handleWebSocketConnection(ws) {
     // Handle SDP offer
     if (data.type === "offer") {
       peer = new wrtc.RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+        ],
       })
 
       // Return ICE candidates back to client
       peer.onicecandidate = (event) => {
         if (event.candidate) {
-          ws.send(JSON.stringify({ type: "candidate", candidate: event.candidate }))
+          ws.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate }))
         }
       }
 
@@ -40,60 +48,170 @@ export function handleWebSocketConnection(ws) {
             clearInterval(audioActivityInterval)
             audioActivityInterval = null
           }
+          // Close the WAV file when connection ends
+          finalizeRecording()
         }
       }
 
-      //  note Enhanced ontrack handler with basic audio activity detection
+      // Enhanced ontrack handler with improved audio processing
       peer.ontrack = (event) => {
         console.log("🎧 ontrack event fired")
         const [incomingStream] = event.streams
+        const [audioTrack] = event.streams[0].getAudioTracks()
+
+        // Record the start time
+        recordingStartTime = Date.now()
+
+        // Use high quality settings for audio recording
+        const sampleRate = 48000 // High quality sample rate
+        console.log(`Using sample rate: ${sampleRate}Hz`)
+
+        // Create audio sink from the track
+        sink = new RTCAudioSink(audioTrack)
+
+        // Create a unique filename with timestamp
+        const filename = `high_quality_audio_${Date.now()}.wav`
+        console.log(`📝 Creating WAV file: ${filename}`)
+
+        // Initialize WAV file writer with high quality settings
+        fileStream = fs.createWriteStream(filename)
+        wavWriter = new wav.Writer({
+          sampleRate: sampleRate,
+          channels: 1, // mono
+          bitDepth: 16, // 16-bit PCM
+        })
+        wavWriter.pipe(fileStream)
+
+        // Audio processing parameters
+        const GAIN = 3.5 // Higher gain for clearer audio
+        const NOISE_GATE_THRESHOLD = 0.003 // Lower threshold to capture more audio
+        const BUFFER_SIZE = 8192 // Larger buffer for better processing
+
+        // Buffer to accumulate samples for better processing
+        let sampleBuffer = []
+
+        // Peak level tracking for normalization
+        let peakLevel = 0
+
+        try {
+          sink.ondata = ({ samples, sampleRate: frameSampleRate }) => {
+            if (frameSampleRate && frameSampleRate !== sampleRate) {
+              console.log(`Note: Frame sample rate (${frameSampleRate}) differs from configured rate (${sampleRate})`)
+            }
+
+            // Process audio for better quality
+            const processedSamples = new Float32Array(samples.length)
+
+            // First pass: measure peak levels and apply initial processing
+            for (let i = 0; i < samples.length; i++) {
+              let sample = samples[i]
+
+              // Apply noise gate (reduce very low signals)
+              if (Math.abs(sample) < NOISE_GATE_THRESHOLD) {
+                sample *= 0.3 // Reduce noise floor
+              }
+
+              // Apply gain to increase volume
+              sample *= GAIN
+
+              // Track peak level for normalization
+              if (Math.abs(sample) > peakLevel) {
+                peakLevel = Math.abs(sample)
+              }
+
+              processedSamples[i] = sample
+            }
+
+            // Second pass: normalize if needed to prevent clipping
+            if (peakLevel > 1.0) {
+              const normalizationFactor = 0.95 / peakLevel // Leave a little headroom
+              for (let i = 0; i < processedSamples.length; i++) {
+                processedSamples[i] *= normalizationFactor
+              }
+            }
+
+            // Add processed samples to buffer
+            sampleBuffer = sampleBuffer.concat(Array.from(processedSamples))
+
+            // Process when buffer reaches threshold
+            if (sampleBuffer.length >= BUFFER_SIZE) {
+              // Apply a simple low-pass filter to smooth out harsh frequencies
+              const smoothedBuffer = new Array(sampleBuffer.length)
+
+              // Simple 3-point moving average filter
+              for (let i = 0; i < sampleBuffer.length; i++) {
+                if (i > 0 && i < sampleBuffer.length - 1) {
+                  // Middle samples get averaged with neighbors
+                  smoothedBuffer[i] = (sampleBuffer[i - 1] + sampleBuffer[i] * 2 + sampleBuffer[i + 1]) / 4
+                } else {
+                  // Edge samples stay the same
+                  smoothedBuffer[i] = sampleBuffer[i]
+                }
+              }
+
+              // Convert Float32 to Int16 PCM with proper scaling
+              const int16Samples = new Int16Array(smoothedBuffer.length)
+              for (let i = 0; i < smoothedBuffer.length; i++) {
+                // Ensure we're within [-1, 1] bounds
+                const s = Math.max(-1, Math.min(1, smoothedBuffer[i]))
+                // Scale to 16-bit PCM range with proper rounding
+                int16Samples[i] = Math.round(s * 32767)
+              }
+
+              // Write to WAV
+              wavWriter.write(Buffer.from(int16Samples.buffer))
+
+              // Reset buffer
+              sampleBuffer = []
+            }
+          }
+        } catch (error) {
+          console.log("Audio sink error:", error)
+        }
+
+        // Clean up when track ends
+        audioTrack.onended = () => {
+          finalizeRecording()
+        }
+
+        // Rest of your existing track handling code...
         if (incomingStream) {
           incomingStream.getTracks().forEach((track) => {
-            // Log track details using available properties
-            console.log(`🎤 Received ${track.kind} track with ID: ${track.id}`)
-
             if (track.kind === "audio") {
               console.log("🎤 Audio track detected")
-              console.log("🔍 Track properties:", {
-                id: track.id,
-                kind: track.kind,
-                enabled: track.enabled,
-                readyState: track.readyState,
-                muted: track.muted,
-              })
-
-              // Set up continuous audio monitoring
-              setupContinuousAudioMonitoring(incomingStream, track, ws)
-
-              // Set up basic audio activity detection
-              setupBasicAudioDetection(track, ws)
-
-              // Original event handlers
-              track.onunmute = () => {
-                console.log("🟢 Listening: user is speaking (onunmute)")
-                ws.send(JSON.stringify({ type: "audio_status", status: "speaking" }))
-              }
-
-              track.onmute = () => {
-                console.log("🔴 Mic is muted or no audio (onmute)")
-                ws.send(JSON.stringify({ type: "audio_status", status: "silent" }))
-              }
             }
           })
         }
       }
-      
 
       // Set remote description from client
       await peer.setRemoteDescription(new wrtc.RTCSessionDescription(data.offer))
-      const answer = await peer.createAnswer()
-      await peer.setLocalDescription(answer)
 
+      // Create answer with high-quality audio preferences
+      const answer = await peer.createAnswer({
+        voiceActivityDetection: false,
+      })
+
+      // Modify SDP to ensure high quality audio
+      if (answer.sdp) {
+        let sdp = answer.sdp
+
+        // Set Opus codec with high quality parameters
+        sdp = sdp.replace(
+          /a=rtpmap:(\d+) opus\/48000\/2/g,
+          "a=rtpmap:$1 opus/48000/2\r\n" +
+            "a=fmtp:$1 minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;cbr=1;maxaveragebitrate=510000;maxplaybackrate=48000;ptime=20;maxptime=40",
+        )
+
+        answer.sdp = sdp
+      }
+
+      await peer.setLocalDescription(answer)
       ws.send(JSON.stringify({ type: "answer", answer }))
     }
 
     // Handle incoming ICE candidates
-    if (data.candidate && peer) {
+    if (data.type === "ice-candidate" && peer) {
       try {
         const candidate = new wrtc.RTCIceCandidate(data.candidate)
         await peer.addIceCandidate(candidate)
@@ -133,173 +251,32 @@ export function handleWebSocketConnection(ws) {
       clearInterval(audioActivityInterval)
       audioActivityInterval = null
     }
+    // Ensure WAV file is properly closed
+    finalizeRecording()
   })
 
-  // Function to set up basic audio detection using RTP packet timing
-  function setupBasicAudioDetection(track, ws) {
-    try {
-      console.log("✅ Setting up basic audio detection")
+  // Helper function to finalize the recording
+  function finalizeRecording() {
+    if (sink) {
+      sink.stop()
+      sink = null
+    }
 
-      if (audioActivityInterval) {
-        clearInterval(audioActivityInterval)
+    if (wavWriter) {
+      try {
+        wavWriter.end()
+        const recordingDuration = recordingStartTime ? Math.round((Date.now() - recordingStartTime) / 1000) : 0
+        console.log(`✅ WAV file saved successfully. Duration: ${recordingDuration} seconds`)
+      } catch (err) {
+        console.error("Error finalizing WAV file:", err)
       }
+      wavWriter = null
+    }
 
-      // Initialize counters
-      lastPacketTime = Date.now()
-      packetCounter = 0
-      isAudioActive = false
-
-      // Set up interval to check audio activity
-      audioActivityInterval = setInterval(() => {
-        // Check if track is still valid
-        if (track.readyState !== "live") {
-          console.log("❌ Audio track is no longer live")
-          clearInterval(audioActivityInterval)
-          audioActivityInterval = null
-          return
-        }
-
-        // Check if track is enabled and not muted
-        const trackActive = track.enabled && !track.muted
-
-        // Increment packet counter (this is just a proxy for activity)
-        packetCounter++
-
-        // Calculate time since last check
-        const now = Date.now()
-        const timeSinceLastCheck = now - lastPacketTime
-        lastPacketTime = now
-
-        // Log basic activity info
-        console.log(`🔍 Audio check: Track active=${trackActive}, Time since last check=${timeSinceLastCheck}ms`)
-
-        // Determine if audio is active based on track state
-        const newAudioState = trackActive
-
-        // If state changed, notify client
-        if (newAudioState !== isAudioActive) {
-          isAudioActive = newAudioState
-          console.log(`🔊 Audio activity changed: ${isAudioActive ? "ACTIVE" : "INACTIVE"}`)
-
-          ws.send(
-            JSON.stringify({
-              type: "audio_status",
-              status: isAudioActive ? "speaking" : "silent",
-            }),
-          )
-        }
-
-        // Send basic audio metrics to client
-        ws.send(
-          JSON.stringify({
-            type: "audio_metrics",
-            metrics: {
-              active: isAudioActive,
-              trackEnabled: track,
-              trackMuted: track.muted,
-              trackState: track.readyState,
-              serverTimestamp: Date.now(),
-              // We can't measure these directly, so we'll use placeholders
-              level: isAudioActive ? -30 : -90, // Placeholder dB level
-              volumeLevel: isAudioActive ? "Active" : "Silent",
-              quality: "Unknown (Server cannot measure)",
-              packetCounter: packetCounter,
-              timeSinceLastCheck: timeSinceLastCheck,
-            },
-          }),
-        )
-
-        // Log server-side audio status
-        console.log(`🎤 Server audio status: ${isAudioActive ? "ACTIVE" : "INACTIVE"}`)
-      }, 1000) // Check every second
-
-      console.log("✅ Basic audio detection setup complete")
-    } catch (error) {
-      console.error("❌ Error setting up basic audio detection:", error)
+    if (fileStream) {
+      fileStream = null
     }
   }
 }
 
-// note Continuous audio monitoring function
-function setupContinuousAudioMonitoring(stream, track, ws) {
-  try {
-    console.log("Check")
-    // Check if track is valid
-    if (!track || track.readyState !== "live") {
-      console.log("❌ Audio track is not live")
-      return
-    }
-
-    const audioTracks = stream.getAudioTracks()
-    if (audioTracks.length === 0) {
-      console.log("❌ No audio tracks found for speech-to-text")
-      return
-    }
-
-    console.log("✅ Setting up continuous audio monitoring")
-
-    // Track state for speaking detection
-    let lastActiveState = track.enabled
-    let checkCount = 0
-    let consecutiveSilentChecks = 0
-    let consecutiveActiveChecks = 0
-
-    // Instead of a timeout, use an interval to continuously check track state
-    const monitoringInterval = setInterval(() => {
-      // Only continue if track is still valid
-      if (track.readyState !== "live") {
-        console.log("❌ Audio track is no longer live, stopping monitoring")
-        clearInterval(monitoringInterval)
-        return
-      }
-
-      checkCount++
-
-      // Check if track is enabled and active
-      const isActive = track.enabled && !track.muted
-
-      // If state changed, log it
-      if (isActive !== lastActiveState) {
-        console.log(`🔄 Audio track state changed: ${isActive ? "active" : "inactive"}`)
-        lastActiveState = isActive
-      }
-
-      // Count consecutive checks in each state
-      if (isActive) {
-        consecutiveSilentChecks = 0
-        consecutiveActiveChecks++
-
-        // After a few consecutive active checks, consider the user speaking
-        if (consecutiveActiveChecks === 3) {
-          console.log("🎤 User is speaking (continuous monitoring)")
-          ws.send(JSON.stringify({ type: "audio_status", status: "speaking" }))
-        }
-      } else {
-        consecutiveActiveChecks = 0
-        consecutiveSilentChecks++
-
-        // Only report silence after several consecutive silent checks
-        // This prevents false silence detection during normal speech pauses
-        if (consecutiveSilentChecks === 10) {
-          console.log("🔇 User is silent (continuous monitoring)")
-          ws.send(JSON.stringify({ type: "audio_status", status: "silent" }))
-        }
-      }
-
-      // Every 30 checks (about 15 seconds), log the current state
-      if (checkCount % 30 === 0) {
-        console.log(`🔍 Audio monitoring check #${checkCount}: ${isActive ? "active" : "inactive"}`)
-      }
-    }, 500) // Check every 500ms instead of using a timeout
-
-    // Clean up the interval if the track ends
-    track.addEventListener("ended", () => {
-      console.log("🛑 Audio track ended, stopping monitoring")
-      clearInterval(monitoringInterval)
-    })
-
-    console.log("✅ Continuous audio monitoring setup complete")
-  } catch (error) {
-    console.error("❌ Error setting up audio monitoring:", error)
-  }
-}
+module.exports = { handleWebSocketConnection }
