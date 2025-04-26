@@ -22,8 +22,8 @@ function AvailableAccent({start, stop}: Props) {
     <div className="mb-4 flex flex-col gap-3 justify-center items-center w-full my-10">
       <Image
         src={"/asset/icon/englishAccent.svg"}
-        width={100}
-        height={100}
+        width={150}
+        height={150}
         alt="AI accent profile Icon"
         className="rounded-full p-1 border-1 border-[#10416d] cursor-pointer"
         onClick={handleToggleAudio}
