@@ -9,8 +9,6 @@ export default function useAudioStreaming() {
   const [connectionStatus, setConnectionStatus] = useState("disconnected")
   const [isMuted, setIsMuted] = useState(false)
   const [gainLevel, setGainLevel] = useState(2.0) // Increased default gain
-  const [connectionAttempts, setConnectionAttempts] = useState(0)
-  const [hasReceivedAnswer, setHasReceivedAnswer] = useState(false)
 
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -20,7 +18,6 @@ export default function useAudioStreaming() {
   const gainNodeRef = useRef<GainNode | null>(null)
   const dataArrayRef = useRef<Uint8Array | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     return () => stopStreaming()
@@ -51,44 +48,9 @@ export default function useAudioStreaming() {
     }
   }, [gainLevel, isMuted])
 
-  // Add connection timeout effect
-  useEffect(() => {
-    if (connectionStatus === "connecting" && !hasReceivedAnswer) {
-      // Set a timeout to retry or fail if connection takes too long
-      connectionTimeoutRef.current = setTimeout(() => {
-        console.log("Connection timeout - retrying or failing")
-        if (connectionAttempts < 2) {
-          // Retry connection
-          stopStreaming()
-          setTimeout(() => {
-            setConnectionAttempts((prev) => prev + 1)
-            handleStartStreaming()
-          }, 1000)
-        } else {
-          // Give up after 3 attempts
-          console.error("Failed to establish connection after multiple attempts")
-          setConnectionStatus("error")
-          stopStreaming()
-          setConnectionAttempts(0)
-        }
-      }, 10000) // 10 second timeout
-
-      return () => {
-        if (connectionTimeoutRef.current) {
-          clearTimeout(connectionTimeoutRef.current)
-          connectionTimeoutRef.current = null
-        }
-      }
-    }
-  }, [connectionStatus, hasReceivedAnswer, connectionAttempts])
-
   const handleStartStreaming = async () => {
     try {
-      // Reset connection state
       setConnectionStatus("connecting")
-      setHasReceivedAnswer(false)
-
-      console.log("Starting WebSocket connection...")
       const ws = new WebSocket("ws://localhost:3001")
       wsRef.current = ws
 
@@ -99,21 +61,10 @@ export default function useAudioStreaming() {
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
         ],
-        iceCandidatePoolSize: 10,
       })
       pcRef.current = pc
 
-      // Add connection debugging
-      pc.onicegatheringstatechange = () => {
-        console.log("ICE gathering state:", pc.iceGatheringState)
-      }
-
-      pc.onicecandidateerror = (event) => {
-        console.error("ICE candidate error:", event)
-      }
-
       // Request high-quality audio with specific constraints
-      console.log("Requesting microphone access...")
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -121,13 +72,28 @@ export default function useAudioStreaming() {
           autoGainControl: true,
           channelCount: 1,
           sampleRate: 48000,
+          sampleSize: 24,
+          // Higher bitrate for better quality
+          googHighpassFilter: true,
+          // Prioritize audio quality
+          googAudioMirroring: false,
+          googDucking: false,
+          googEchoCancellation: true,
+          googEchoCancellation2: true,
+          googAutoGainControl: true,
+          googAutoGainControl2: true,
+          googNoiseSuppression: true,
+          googNoiseSuppression2: true,
+          googTypingNoiseDetection: true,
+          googExperimentalEchoCancellation: true,
+          googExperimentalNoiseSuppression: true,
+          googExperimentalAutoGainControl: true,
         },
       })
       streamRef.current = stream
-      console.log("Microphone access granted")
 
       // Create high-quality audio context
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+      const audioContext = new AudioContext({ sampleRate: 48000 })
       audioContextRef.current = audioContext
 
       const source = audioContext.createMediaStreamSource(stream)
@@ -187,10 +153,7 @@ export default function useAudioStreaming() {
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log("Sending ICE candidate to server")
           ws.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate }))
-        } else {
-          console.log("All ICE candidates gathered")
         }
       }
 
@@ -201,7 +164,6 @@ export default function useAudioStreaming() {
 
         if (pc.connectionState === "connected") {
           setIsStreaming(true)
-          setConnectionAttempts(0) // Reset attempts on successful connection
         } else if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
           stopStreaming()
         }
@@ -209,75 +171,48 @@ export default function useAudioStreaming() {
 
       // Handle WebSocket connection
       ws.onopen = async () => {
-        console.log("WebSocket connected, creating offer...")
+        // Create offer with high-quality audio settings
+        const offerOptions = {
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: false,
+          voiceActivityDetection: false,
+        }
 
-        try {
-          // Create offer with high-quality audio settings
-          const offerOptions = {
-            offerToReceiveAudio: false, // We don't need to receive audio
-            offerToReceiveVideo: false,
-            voiceActivityDetection: false,
-          }
+        const offer = await pc.createOffer(offerOptions)
 
-          const offer = await pc.createOffer(offerOptions)
-          console.log("Offer created")
+        // Modify SDP to force high-quality audio
+        if (offer.sdp) {
+          let sdp = offer.sdp
 
-          // Modify SDP to force high-quality audio
-          if (offer.sdp) {
-            let sdp = offer.sdp
+          // Set Opus codec with high quality parameters
+          sdp = sdp.replace(
+            /a=rtpmap:(\d+) opus\/48000\/2/g,
+            "a=rtpmap:$1 opus/48000/2\r\n" +
+              "a=fmtp:$1 minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;cbr=1;maxaveragebitrate=510000;maxplaybackrate=48000;ptime=20;maxptime=40",
+          )
 
-            // Set Opus codec with high quality parameters
+          // Ensure audio level indication is enabled
+          if (!sdp.includes("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level")) {
             sdp = sdp.replace(
               /a=rtpmap:(\d+) opus\/48000\/2/g,
-              "a=rtpmap:$1 opus/48000/2\r\n" +
-                "a=fmtp:$1 minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;cbr=1;maxaveragebitrate=128000;maxplaybackrate=48000;ptime=20;maxptime=40",
+              "a=rtpmap:$1 opus/48000/2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level",
             )
-
-            offer.sdp = sdp
           }
 
-          await pc.setLocalDescription(offer)
-          console.log("Local description set, sending offer to server")
-          ws.send(JSON.stringify({ type: "offer", offer }))
-
-          // Send a heartbeat to keep the connection alive
-          const heartbeatInterval = setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "heartbeat" }))
-            } else {
-              clearInterval(heartbeatInterval)
-            }
-          }, 5000)
-        } catch (error) {
-          console.error("Error creating or sending offer:", error)
-          setConnectionStatus("error")
-          stopStreaming()
+          offer.sdp = sdp
         }
+
+        await pc.setLocalDescription(offer)
+        ws.send(JSON.stringify({ type: "offer", offer }))
       }
 
       // Handle WebSocket messages
       ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          console.log("Received message type:", data.type)
-
-          if (data.type === "answer") {
-            console.log("Received answer from server")
-            setHasReceivedAnswer(true)
-            await pc.setRemoteDescription(new RTCSessionDescription(data.answer))
-            console.log("Remote description set")
-          } else if (data.type === "ice-candidate") {
-            console.log("Received ICE candidate from server")
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
-          } else if (data.type === "audio_metrics") {
-            // Handle metrics response
-            console.log("Received audio metrics from server:", data.metrics)
-          } else if (data.type === "heartbeat_ack") {
-            // Heartbeat acknowledgment
-            console.log("Heartbeat acknowledged")
-          }
-        } catch (error) {
-          console.error("Error handling WebSocket message:", error)
+        const data = JSON.parse(event.data)
+        if (data.type === "answer") {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer))
+        } else if (data.type === "ice-candidate") {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
         }
       }
 
@@ -297,7 +232,7 @@ export default function useAudioStreaming() {
 
       // Send periodic metrics
       const metricsInterval = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
+        if (ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
               type: "client_audio_metrics",
@@ -321,41 +256,27 @@ export default function useAudioStreaming() {
   }
 
   const stopStreaming = () => {
-    console.log("Stopping streaming...")
-
-    // Clear connection timeout if it exists
-    if (connectionTimeoutRef.current) {
-      clearTimeout(connectionTimeoutRef.current)
-      connectionTimeoutRef.current = null
-    }
-
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => {
-        track.stop()
-        console.log("Audio track stopped")
-      })
+      streamRef.current.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
 
     if (pcRef.current) {
       pcRef.current.close()
       pcRef.current = null
-      console.log("WebRTC connection closed")
     }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.close()
       wsRef.current = null
-      console.log("WebSocket connection closed")
     }
 
     if (audioContextRef.current) {
-      audioContextRef.current.close().catch((err) => console.error("Error closing audio context:", err))
+      audioContextRef.current.close()
       audioContextRef.current = null
       analyserRef.current = null
       gainNodeRef.current = null
       dataArrayRef.current = null
-      console.log("Audio context closed")
     }
 
     if (animationFrameRef.current) {
@@ -364,7 +285,6 @@ export default function useAudioStreaming() {
     }
 
     setIsStreaming(false)
-    setHasReceivedAnswer(false)
     if (connectionStatus !== "error") setConnectionStatus("disconnected")
   }
 
@@ -376,6 +296,7 @@ export default function useAudioStreaming() {
     const value = Number.parseFloat(e.target.value)
     setGainLevel(value)
   }
+
 
   return {
     handleGainChange,

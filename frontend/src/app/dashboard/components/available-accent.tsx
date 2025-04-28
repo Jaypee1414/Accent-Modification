@@ -28,7 +28,7 @@ function AvailableAccent({start, stop}: Props) {
         className="rounded-full p-1 border-1 border-[#10416d] cursor-pointer"
         onClick={handleToggleAudio}
       />
-      <label htmlFor="">English Accent</label>
+      <label htmlFor="">Abs English Accent</label>
     </div>
   );
 }

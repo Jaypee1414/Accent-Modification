@@ -94,80 +94,81 @@ function handleWebSocketConnection(ws) {
         let peakLevel = 0
 
         try {
-          sink.ondata = ({ samples, sampleRate: frameSampleRate }) => {
-            console.log("sample", samples)
-            if (frameSampleRate && frameSampleRate !== sampleRate) {
-              console.log(`Note: Frame sample rate (${frameSampleRate}) differs from configured rate (${sampleRate})`)
-            }
-
-            // note Process audio for better quality
-            const processedSamples = new Float32Array(samples.length)
-
-            // note First pass: measure peak levels and apply initial processing
-            for (let i = 0; i < samples.length; i++) {
-              let sample = samples[i]
-
-              // note Apply noise gate (reduce very low signals)
-              if (Math.abs(sample) < NOISE_GATE_THRESHOLD) {
-                sample *= 0.3 // note Reduce noise floor
+          const mlSocket = new WebSocket('ws://localhost:8765');
+          mlSocket.onopen = () => {
+            sink.ondata = ({ samples, sampleRate: frameSampleRate }) => {
+              console.log("sample", samples)
+              mlSocket.send(samples.buffer); 
+  
+              // note Process audio for better quality
+              const processedSamples = new Float32Array(samples.length)
+  
+              // note First pass: measure peak levels and apply initial processing
+              for (let i = 0; i < samples.length; i++) {
+                let sample = samples[i]
+  
+                // note Apply noise gate (reduce very low signals)
+                if (Math.abs(sample) < NOISE_GATE_THRESHOLD) {
+                  sample *= 0.3 // note Reduce noise floor
+                }
+  
+                // note Apply gain to increase volume
+                sample *= GAIN
+  
+                // note Track peak level for normalization
+                if (Math.abs(sample) > peakLevel) {
+                  peakLevel = Math.abs(sample)
+                }
+  
+                processedSamples[i] = sample
               }
-
-              // note Apply gain to increase volume
-              sample *= GAIN
-
-              // note Track peak level for normalization
-              if (Math.abs(sample) > peakLevel) {
-                peakLevel = Math.abs(sample)
-              }
-
-              processedSamples[i] = sample
-            }
-
-            // note Second pass: normalize if needed to prevent clipping
-            if (peakLevel > 1.0) {
-              const normalizationFactor = 0.95 / peakLevel // note Leave a little headroom
-              for (let i = 0; i < processedSamples.length; i++) {
-                processedSamples[i] *= normalizationFactor
-              }
-            }
-
-            // note Add processed samples to buffer
-            sampleBuffer = sampleBuffer.concat(Array.from(processedSamples))
-
-            // note Process when buffer reaches threshold
-            if (sampleBuffer.length >= BUFFER_SIZE) {
-              // note Apply a simple low-pass filter to smooth out harsh frequencies
-              const smoothedBuffer = new Array(sampleBuffer.length)
-
-              // note Simple 3-point moving average filter
-              for (let i = 0; i < sampleBuffer.length; i++) {
-                if (i > 0 && i < sampleBuffer.length - 1) {
-                  // note Middle samples get averaged with neighbors
-                  smoothedBuffer[i] = (sampleBuffer[i - 1] + sampleBuffer[i] * 2 + sampleBuffer[i + 1]) / 4
-                } else {
-                  // note Edge samples stay the same
-                  smoothedBuffer[i] = sampleBuffer[i]
+  
+              // note Second pass: normalize if needed to prevent clipping
+              if (peakLevel > 1.0) {
+                const normalizationFactor = 0.95 / peakLevel // note Leave a little headroom
+                for (let i = 0; i < processedSamples.length; i++) {
+                  processedSamples[i] *= normalizationFactor
                 }
               }
-
-              // note Convert Float32 to Int16 PCM with proper scaling
-              const int16Samples = new Int16Array(smoothedBuffer.length)
-              for (let i = 0; i < smoothedBuffer.length; i++) {
-                // note Ensure we're within [-1, 1] bounds
-                const s = Math.max(-1, Math.min(1, smoothedBuffer[i]))
-                // note Scale to 16-bit PCM range with proper rounding
-                int16Samples[i] = Math.round(s * 32767)
+  
+              // note Add processed samples to buffer
+              sampleBuffer = sampleBuffer.concat(Array.from(processedSamples))
+  
+              // note Process when buffer reaches threshold
+              if (sampleBuffer.length >= BUFFER_SIZE) {
+                // note Apply a simple low-pass filter to smooth out harsh frequencies
+                const smoothedBuffer = new Array(sampleBuffer.length)
+  
+                // note Simple 3-point moving average filter
+                for (let i = 0; i < sampleBuffer.length; i++) {
+                  if (i > 0 && i < sampleBuffer.length - 1) {
+                    // note Middle samples get averaged with neighbors
+                    smoothedBuffer[i] = (sampleBuffer[i - 1] + sampleBuffer[i] * 2 + sampleBuffer[i + 1]) / 4
+                  } else {
+                    // note Edge samples stay the same
+                    smoothedBuffer[i] = sampleBuffer[i]
+                  }
+                }
+  
+                // note Convert Float32 to Int16 PCM with proper scaling
+                const int16Samples = new Int16Array(smoothedBuffer.length)
+                for (let i = 0; i < smoothedBuffer.length; i++) {
+                  // note Ensure we're within [-1, 1] bounds
+                  const s = Math.max(-1, Math.min(1, smoothedBuffer[i]))
+                  // note Scale to 16-bit PCM range with proper rounding
+                  int16Samples[i] = Math.round(s * 32767)
+                }
+  
+                // note Write to WAV
+                wavWriter.write(Buffer.from(int16Samples.buffer))
+  
+                // note Reset buffer
+                sampleBuffer = []
               }
-
-              // note Write to WAV
-              wavWriter.write(Buffer.from(int16Samples.buffer))
-
-              // note Reset buffer
-              sampleBuffer = []
             }
           }
         } catch (error) {
-          console.log("Audio sink error:", error)
+          console.error("Error initializing WebSocket:", error);
         }
 
         // note Clean up when track ends
