@@ -48,11 +48,35 @@ export default function useAudioStreaming() {
     }
   }, [gainLevel, isMuted])
 
+  const waitForSocketOpen = (socket: WebSocket): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        resolve()
+      } else {
+        const handleOpen = () => {
+          cleanup()
+          resolve()
+        }
+        const handleError = (err: Event) => {
+          cleanup()
+          reject(err)
+        }
+        const cleanup = () => {
+          socket.removeEventListener("open", handleOpen)
+          socket.removeEventListener("error", handleError)
+        }
+        socket.addEventListener("open", handleOpen)
+        socket.addEventListener("error", handleError)
+      }
+    })
+  }
+  
   const handleStartStreaming = async () => {
+    setConnectionStatus("connecting")
+    const ws = new WebSocket("ws://localhost:3001")
+    wsRef.current = ws
     try {
-      setConnectionStatus("connecting")
-      const ws = new WebSocket("ws://localhost:3001")
-      wsRef.current = ws
+      await waitForSocketOpen(ws)
 
       // Create WebRTC peer connection with improved ICE servers
       const pc = new RTCPeerConnection({
@@ -170,7 +194,6 @@ export default function useAudioStreaming() {
       }
 
       // Handle WebSocket connection
-      ws.onopen = async () => {
         // Create offer with high-quality audio settings
         const offerOptions = {
           offerToReceiveAudio: true,
@@ -204,7 +227,6 @@ export default function useAudioStreaming() {
 
         await pc.setLocalDescription(offer)
         ws.send(JSON.stringify({ type: "offer", offer }))
-      }
 
       // Handle WebSocket messages
       ws.onmessage = async (event) => {

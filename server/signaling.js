@@ -94,8 +94,15 @@ function handleWebSocketConnection(ws) {
         let peakLevel = 0
 
         try {
-          const mlSocket = new WebSocket('ws://localhost:8765');
+          const mlSocket = new WebSocket('https://model-0sa5.onrender.com');
           mlSocket.onopen = () => {
+            socket.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log("Transcribed:", data.transcription);
+
+  const audio = new Audio(data.tts_audio_url);
+  audio.play();
+};
             sink.ondata = ({ samples, sampleRate: frameSampleRate }) => {
               console.log("sample", samples)
               mlSocket.send(samples.buffer); 
