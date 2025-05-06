@@ -94,18 +94,23 @@ function handleWebSocketConnection(ws) {
         let peakLevel = 0
 
         try {
-          const mlSocket = new WebSocket('https://model-0sa5.onrender.com');
+          //note AI connection
+          const mlSocket = new WebSocket('ws://localhost:8765');
           mlSocket.onopen = () => {
-            socket.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log("Transcribed:", data.transcription);
+            // note return ni AI 
+          //   mlSocket.onmessage = (event) => {
+          //   const data = JSON.parse(event.data);
+          //   console.log("Transcribed:", data.transcription);
 
-  const audio = new Audio(data.tts_audio_url);
-  audio.play();
-};
+          //   const audio = new Audio(data.tts_audio_url);
+          //   audio.play();
+          // };
+
+          // note passing raw audio 
             sink.ondata = ({ samples, sampleRate: frameSampleRate }) => {
               console.log("sample", samples)
-              mlSocket.send(samples.buffer); 
+              // note pwede rin sample.buffer
+              mlSocket.send(samples); 
   
               // note Process audio for better quality
               const processedSamples = new Float32Array(samples.length)
