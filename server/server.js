@@ -1,6 +1,6 @@
-import Fastify from 'fastify'
-import { WebSocketServer } from 'ws'
-import { handleWebSocketConnection } from './signaling.js'
+const Fastify = require('fastify');
+const { WebSocketServer } = require('ws');
+const { handleWebSocketConnection } = require('./signaling.js');
 
 const fastify = Fastify()
 const wss = new WebSocketServer({ noServer: true })
