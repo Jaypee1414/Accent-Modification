@@ -98,20 +98,21 @@ export default function useAudioStreaming() {
           sampleRate: 48000,
           sampleSize: 24,
           // Higher bitrate for better quality
-          googHighpassFilter: true,
-          // Prioritize audio quality
-          googAudioMirroring: false,
-          googDucking: false,
-          googEchoCancellation: true,
-          googEchoCancellation2: true,
-          googAutoGainControl: true,
-          googAutoGainControl2: true,
-          googNoiseSuppression: true,
-          googNoiseSuppression2: true,
-          googTypingNoiseDetection: true,
-          googExperimentalEchoCancellation: true,
-          googExperimentalNoiseSuppression: true,
-          googExperimentalAutoGainControl: true,
+          // googHighpassFilter: true,
+          
+          // // Prioritize audio quality
+          // googAudioMirroring: false,
+          // googDucking: false,
+          // googEchoCancellation: true,
+          // googEchoCancellation2: true,
+          // googAutoGainControl: true,
+          // googAutoGainControl2: true,
+          // googNoiseSuppression: true,
+          // googNoiseSuppression2: true,
+          // googTypingNoiseDetection: true,
+          // googExperimentalEchoCancellation: true,
+          // googExperimentalNoiseSuppression: true,
+          // googExperimentalAutoGainControl: true,
         },
       })
       streamRef.current = stream
@@ -271,7 +272,9 @@ export default function useAudioStreaming() {
 
       return () => clearInterval(metricsInterval)
     } catch (error) {
-      console.error("Error starting stream:", error)
+      // console.error("Error starting stream:", error)
+      console.error("Error starting stream:", JSON.stringify(error, Object.getOwnPropertyNames(error)))
+
       setConnectionStatus("error")
       stopStreaming()
     }

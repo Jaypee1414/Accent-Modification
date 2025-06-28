@@ -20,7 +20,7 @@ const EnhancedAudioStreamer = () => {
 
   return (
     <>
-      <div className="p-10 w-1/2 mx-auto bg-white rounded-xl shadow-md absolute right-1/2 bottom-1/2 transfrom translate-x-1/2 translate-y-1/2">
+      <div className="p-10 w-1/2 mx-auto bg-white rounded-xl shadow-md absolute right-1/2 bottom-1/2 transform translate-x-1/2 translate-y-1/2">
         <h2 className="text-xl font-bold mb-4 text-center">
           Choose your accent
         </h2>
