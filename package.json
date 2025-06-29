@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "say": "^0.16.0"
+  }
+}
